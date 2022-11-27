@@ -4,6 +4,7 @@
 
 #ifndef CN_LAB7_SOCKET_DEFS_H
 #define CN_LAB7_SOCKET_DEFS_H
+#define TO_STRING(x) (string((((char*)&x)),sizeof(x)))
 enum Special{
     BeginPackage = 0x23,
     EndPackage = 0x66,
@@ -11,6 +12,11 @@ enum Special{
 };
 enum OpType{
     GetTime,
+    GetName,
+    GetList,
+    RespTime,
+    RespName,
+    RespList,
     CloseConnection
 };
 enum Stage{
@@ -20,4 +26,5 @@ enum Stage{
     EndStage
 };
 const int buf_size=4096;
+const std::string host_name="Mogician";
 #endif //CN_LAB7_SOCKET_DEFS_H
