@@ -1,24 +1,29 @@
-#include <stdio.h>
-#include <winsock2.h>
-#include <iostream>
+#include<WINSOCK2.H>
+#include<stdio.h>
+#include<iostream>
+#include<cstring>
 #include <thread>
-#include <set>
 #include <mutex>
 #include <queue>
+#include <sstream>
 #include "defs.h"
+
 using namespace std;
 
-mutex client_mutex;
-set<SOCKET> clients;
 enum UserOp{
-    Exit=66
+    Connect=88
+};
+union MsgType{
+    OpType op;
+    UserOp user;
 };
 struct Msg{
-    UserOp type;
+    MsgType type;
     string data;
 };
 mutex msg_mutex;
 queue<Msg> msg_q;
+
 void Send(OpType t, string s, SOCKET server_s) {
     char buf[buf_size];
     buf[0] = BeginPackage;
@@ -32,13 +37,8 @@ void Send(OpType t, string s, SOCKET server_s) {
     buf[0]=EndPackage;
     send(server_s, buf, 1, 0);
 }
-void SendTime(SOCKET client_s){
-    Send(GetTime,"time",client_s);
-}
-void Receiver(SOCKET client_s){
-    client_mutex.lock();
-    clients.insert(client_s);
-    client_mutex.unlock();
+
+void Receiver(SOCKET peer_s){
     char buf[buf_size];
     string data;
     char *buf_begin,*buf_end;
@@ -46,10 +46,17 @@ void Receiver(SOCKET client_s){
     Stage cur=EndStage;
     bool is_trans=false;
     OpType type;
+    Msg temp;
     while (1){
-        int sz = recv(client_s, buf, buf_size, 0);
+        int sz = recv(peer_s, buf, buf_size, 0);
         if (sz <= 0) {
-            break;
+            if (GetLastError()!=WSAEWOULDBLOCK){
+                temp.type.op=CloseConnection;
+                msg_mutex.lock();
+                msg_q.push(temp);
+                msg_mutex.unlock();
+                break;
+            }
         }
         buf[sz]=0;
         cout<<"sz:"<<sz<<endl;
@@ -82,10 +89,10 @@ void Receiver(SOCKET client_s){
                 else if (cur == DataStage && *buf_begin == EndPackage && !is_trans){
                     cout<<"End"<<endl;
                     cur=EndStage;
+                    cout<<data<<endl;
                     switch (type) {
                         case GetTime:{
-                            SendTime(client_s);
-                            cout<<data<<endl;
+
                             break;
                         }
                     }
@@ -109,9 +116,7 @@ void Receiver(SOCKET client_s){
             }
         }
     }
-    client_mutex.lock();
-    clients.erase(client_s);
-    client_mutex.unlock();
+    cout<<"Receiver end"<<endl;
 }
 
 void UserHandler(){
@@ -119,8 +124,9 @@ void UserHandler(){
     Msg temp;
     while (1){
         cin>>op;
-        if (op=="exit"){
-            temp.type=Exit;
+        if (op=="connect"){
+            temp.type.user=Connect;
+            getline(cin,temp.data);
             msg_mutex.lock();
             msg_q.push(temp);
             msg_mutex.unlock();
@@ -128,99 +134,72 @@ void UserHandler(){
     }
 }
 
-int main(int argc, char* argv[])
-{
-    //初始化WSA  
-    WORD sockVersion = MAKEWORD(2,2);
-    WSADATA wsaData;
-    if(WSAStartup(sockVersion, &wsaData)!=0)
-    {
+int main() {
+    WORD sockVersion = MAKEWORD(2, 2);
+    WSADATA data;
+    if (WSAStartup(sockVersion, &data) != 0) {
         return 0;
     }
-    //创建套接字
-    SOCKET slisten = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if(slisten == INVALID_SOCKET)
-    {
-        printf("socket error !");
+    SOCKET sclient = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (sclient == INVALID_SOCKET) {
+        printf("invalid socket!");
         return 0;
     }
-    //绑定IP和端口
-    sockaddr_in sin;
-    sin.sin_family = AF_INET;
-    sin.sin_port = htons(4495);
-    sin.sin_addr.S_un.S_addr = INADDR_ANY;
-    if(bind(slisten, (LPSOCKADDR)&sin, sizeof(sin)) == SOCKET_ERROR)
-    {
-        printf("bind error !");
-    }
-    //开始监听
-    if(listen(slisten, 5) == SOCKET_ERROR)
-    {
-        printf("listen error !");
-        return 0;
-    }
-    u_long a=1;
-    cout<<"ioerr:"<<ioctlsocket(slisten, FIONBIO, &a)<<endl;
 
-    //循环接收数据
-    SOCKET sClient;
-    sockaddr_in remoteAddr;
-    int nAddrlen = sizeof(remoteAddr);
-    char revData[255];
-    fflush(stdout);
-    bool run=true;
     thread user_handler(UserHandler);
     user_handler.detach();
-    while (run)
-    {
-//        cout<<"running"<<endl;
+    string op;
+    bool connected=false;
+    while (1){
         if (!msg_q.empty()){
             msg_mutex.lock();
             Msg temp=msg_q.front();
             msg_q.pop();
             msg_mutex.unlock();
-            switch (temp.type) {
-                case Exit:{
-                    client_mutex.lock();
-                    for (auto o:clients){
-                        closesocket(o);
-                    }
-                    client_mutex.unlock();
-                    run=false;
-                    break;
+            if (temp.type.user==Connect){
+                stringstream ss(temp.data);
+                string ip;
+                int port;
+                ss>>ip>>port;
+                sockaddr_in serAddr;
+                serAddr.sin_family = AF_INET;
+                serAddr.sin_port = htons(port);
+                serAddr.sin_addr.S_un.S_addr = inet_addr(ip.c_str());
+                if (connect(sclient, (sockaddr *) &serAddr, sizeof(serAddr)) == SOCKET_ERROR) {  //连接失败
+                    printf("connect error !");
+                    closesocket(sclient);
+                    return 0;
                 }
+                connected=true;
+                u_long a=1;
+                cout<<"ioerr:"<<ioctlsocket(sclient, FIONBIO, &a)<<endl;
+                thread rcv_t(Receiver,sclient);
+                rcv_t.detach();
+                Send(GetTime, "hello", sclient);
+            }
+            else if (temp.type.op==CloseConnection){
+                cout<<"closed"<<endl;
+                closesocket(sclient);
+                connected=false;
             }
         }
-        sClient = accept(slisten, (SOCKADDR *)&remoteAddr, &nAddrlen);
-        if(sClient == INVALID_SOCKET)
-        {
-            if (WSAGetLastError() == WSAEWOULDBLOCK){
-                this_thread::sleep_for(chrono::milliseconds(100));
-                continue;
-            }
-            printf("accept error !");
-            continue;
-        }
-        thread t(Receiver, sClient);
-        t.detach();
-
-//        printf("接受到一个连接：%s \r\n", inet_ntoa(remoteAddr.sin_addr));
-//
-//        //接收数据
-//        int ret = recv(sClient, revData, 255, 0);
-//        if(ret > 0)
-//        {
-//            revData[ret] = 0x00;
-//            printf(revData);
-//        }
-//
-//        //发送数据
-//        const char * sendData = "你好，TCP客户端！\n";
-//        send(sClient, sendData, strlen(sendData), 0);
-//        closesocket(sClient);
     }
 
-    closesocket(slisten);
+
+
+
+
+
+//    char recData[255];
+//    int ret = recv(sclient, recData, 255, 0);
+//    if (ret > 0) {
+//        recData[ret] = 0x00;
+//        printf(recData);
+//    }
+    closesocket(sclient);
+
+
     WSACleanup();
     return 0;
+
 }
