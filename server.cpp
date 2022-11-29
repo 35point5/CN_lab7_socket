@@ -25,10 +25,10 @@ queue<Msg> msg_q;
 
 void Send(OpType t, string s, SOCKET server_s) {
     char buf[buf_size];
-    buf[0] = BeginPackage;
-    buf[1] = t;
-    memcpy(buf + 2, s.c_str(), s.size());
-    buf[2+s.size()] = EndPackage;
+    buf[0] = BeginPackage; //数据包头部
+    buf[1] = t; //数据包类型
+    memcpy(buf + 2, s.c_str(), s.size()); //数据包内容
+    buf[2+s.size()] = EndPackage; //数据包结束
     send(server_s, buf, 3 + s.size(), 0);
 }
 
@@ -45,11 +45,10 @@ void SendName(SOCKET client_s, int cid) {
 
 void SendList(SOCKET client_s, int cid) {
     cout << "Send list to " << cid << endl;
-    client_mutex.lock();
+    client_mutex.lock(); //锁定客户端列表
     string s;
-    string s1, s2;
-    for (auto o: clients) {
-        sockaddr_in addr;
+    for (auto o: clients) { //枚举所有客户端
+        sockaddr_in addr; //客户端地址
         int len = sizeof(addr);
         getpeername(o.second, (sockaddr *) &addr, &len);
         s += TO_STRING(o.first) + TO_STRING(addr);
@@ -64,16 +63,16 @@ void SendAndResp(SOCKET s, const string &data, int cid) {
     id = *(int *) data.c_str();
     msg = data.substr(sizeof(int));
     int err;
-    if (clients.count(id)) {
+    if (clients.count(id)) { //如果客户端存在
         cout<<"Send message to "<<id<<endl;
-        Send(RcvMsg, TO_STRING(cid) + msg, clients[id]);
+        Send(RcvMsg, TO_STRING(cid) + msg, clients[id]); //发送消息给目标
         err = 0;
         cout<<"Response send message success to "<<cid<<endl;
-        Send(RespMsg, TO_STRING(err), s);
-    } else {
+        Send(RespMsg, TO_STRING(err), s); //回复发送成功
+    } else { //如果客户端不存在
         err = 1;
         cout<<"Response send message failed to "<<cid<<endl;
-        Send(RespMsg, TO_STRING(err), s);
+        Send(RespMsg, TO_STRING(err), s); //回复发送失败
     }
 }
 
