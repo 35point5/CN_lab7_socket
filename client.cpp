@@ -12,8 +12,10 @@
 using namespace std;
 
 enum UserOp {
-    UserConnect = 88,
-    UserClose
+    UserConnect = 99,
+    UserClose,
+    UserExit,
+    CloseConnection
 };
 union MsgType {
     OpType op;
@@ -36,14 +38,9 @@ void Send(OpType t, string s, SOCKET server_s) {
     char buf[buf_size];
     buf[0] = BeginPackage;
     buf[1] = t;
-    send(server_s, buf, 2, 0);
-    int i = 0;
-    for (; i < s.length(); i += buf_size) {
-        memcpy(buf, s.c_str() + i, min(buf_size, (int) s.length() - i));
-        send(server_s, buf, min(buf_size, (int) s.length() - i), 0);
-    }
-    buf[0] = EndPackage;
-    send(server_s, buf, 1, 0);
+    memcpy(buf + 2, s.c_str(), s.size());
+    buf[2+s.size()] = EndPackage;
+    send(server_s, buf, 3 + s.size(), 0);
 }
 
 void Receiver(SOCKET peer_s) {
@@ -56,36 +53,22 @@ void Receiver(SOCKET peer_s) {
     OpType type;
     Msg temp;
     while (1) {
-        int sz = recv(peer_s, buf, buf_size, 0);
+        int sz = recv(peer_s, buf, buf_size, 0); //接收数据
         if (sz <= 0) {
-            if (sz != -1) cout << sz << endl;
-            if (WSAGetLastError() != WSAEWOULDBLOCK || !sz) {
-                cout << "exit" << endl;
-                temp.type.op = CloseConnection;
-                PushQ(temp);
-                break;
-            }
-        }
-//        buf[sz]=0;
-//        cout<<"sz:"<<sz<<endl;
+            temp.type.user = CloseConnection;
+            PushQ(temp);
+            break;
+        } //错误处理
         if (sz > 0) {
-            for (int jj = 0; jj < sz; ++jj) {
-                printf("%2x ", buf[jj]);
-            }
-            puts("");
             buf_begin = buf;
-            buf_end = buf + sz;
+            buf_end = buf + sz; //设置缓冲区指针
             while (buf_begin != buf_end) {
-                if (cur == EndStage && *buf_begin == BeginPackage) {
-                    cout << "Begin" << endl;
-                    cur = BeginStage;
-                } else if (cur == BeginStage) {
-                    cout << "OpType" << endl;
+                if (cur == EndStage && *buf_begin == BeginPackage) { //识别数据包头部
+                    cur = BeginStage; //当前状态
+                } else if (cur == BeginStage) { //识别数据包类型
                     cur = TypeStage;
-                    cout << "type:";
                     switch (*buf_begin) {
                         case RespTime: {
-                            cout << RespTime << endl;
                             type = RespTime;
                             break;
                         }
@@ -94,25 +77,27 @@ void Receiver(SOCKET peer_s) {
                             break;
                         }
                         case RespList: {
-                            cout<<"resplist"<<endl;
                             type = RespList;
                             break;
                         }
+                        case RespMsg: {
+                            type = RespMsg;
+                            break;
+                        }
+                        case RcvMsg: {
+                            type = RcvMsg;
+                            break;
+                        }
                     }
-                } else if (cur == TypeStage && *buf_begin != EndPackage) {
-                    cout << "Data" << endl;
+                } else if (cur == TypeStage && *buf_begin != EndPackage) { //识别数据包内容
                     cur = DataStage;
-                } else if ((cur == DataStage || cur == TypeStage) && *buf_begin == EndPackage && !is_trans) {
-                    cout << "End" << endl;
+                } else if ((cur == DataStage || cur == TypeStage) && *buf_begin == EndPackage && !is_trans) { //识别数据包结束符，非转义
                     cur = EndStage;
-                    cout << data << endl;
-                    switch (type) {
+                    switch (type) { //根据数据包类型进行处理
                         case RespTime: {
-                            cout << "gettime !!" << endl;
                             temp.type.op = RespTime;
                             temp.data = data;
-                            cout << "time_t:" << *(time_t *) data.c_str() << endl;
-                            PushQ(temp);
+                            PushQ(temp); //将数据包压入消息队列
                             break;
                         }
                         case RespName: {
@@ -125,30 +110,37 @@ void Receiver(SOCKET peer_s) {
                             temp.type.op = RespList;
                             temp.data = data;
                             PushQ(temp);
+                            break;
+                        }
+                        case RespMsg: {
+                            temp.type.op = RespMsg;
+                            temp.data = data;
+                            PushQ(temp);
+                            break;
+                        }
+                        case RcvMsg: {
+                            temp.type.op = RcvMsg;
+                            temp.data = data;
+                            PushQ(temp);
+                            break;
                         }
                     }
                     data = "";
                 }
-                if (cur == DataStage) {
-                    if (is_trans) {
+                if (cur == DataStage) { //处理内容
+                    if (is_trans) { //当前字节需要转义
                         is_trans = false;
-                        cerr << *buf_begin << endl;
-                        flush(cerr);
                         data.push_back(*buf_begin);
-                    } else if (*buf_begin == (char) Trans) {
+                    } else if (*buf_begin == (char) Trans) { //转义标志符
                         is_trans = true;
-                    } else {
-                        cerr << *buf_begin << endl;
-                        flush(cerr);
+                    } else { //直接添加至数据
                         data.push_back(*buf_begin);
                     }
                 }
-                ++buf_begin;
+                ++buf_begin; //指针后移
             }
-
         }
     }
-    cout << "Receiver end" << endl;
 }
 
 void UserHandler() {
@@ -161,38 +153,45 @@ void UserHandler() {
             getline(cin, temp.data);
             PushQ(temp);
         } else if (op == "close") {
-            cout << "input exit" << endl;
             temp.type.user = UserClose;
+            getline(cin, temp.data);
+            PushQ(temp);
+        } else if (op == "exit") {
+            temp.type.user = UserExit;
             getline(cin, temp.data);
             PushQ(temp);
         } else if (op == "getname") {
             temp.type.op = GetName;
             getline(cin, temp.data);
             PushQ(temp);
-        } else if (op == "getlist"){
-            temp.type.op=GetList;
+        } else if (op == "getlist") {
+            temp.type.op = GetList;
             getline(cin, temp.data);
             PushQ(temp);
-        } else if (op =="gettime"){
-            temp.type.op=GetTime;
+        } else if (op == "gettime") {
+            temp.type.op = GetTime;
             getline(cin, temp.data);
             PushQ(temp);
+        } else if (op == "send") {
+            temp.type.op = SendMsg;
+            getline(cin, temp.data);
+            PushQ(temp);
+        } else {
+            cout << "Unknown command!" << endl;
         }
     }
 }
 
 void ReqTime(SOCKET s) {
-    cout << "req time" << endl;
     Send(GetTime, "", s);
 }
 
 void PrintTime(time_t t) {
-    cout << put_time(localtime(&t), "%x %X") << endl;
+    cout << std::put_time(localtime(&t), "%x %X") << endl;
     flush(cout);
 }
 
 void ReqName(SOCKET s) {
-    cout << "req name" << endl;
     Send(GetName, "", s);
 }
 
@@ -201,97 +200,132 @@ void PrintName(const string &s) {
     flush(cout);
 }
 
-void ReqList(SOCKET s){
-    Send(GetList,"",s);
+void ReqList(SOCKET s) {
+    Send(GetList, "", s);
 }
 
-void PrintList(const string &s){
-    cout<<"Client list:"<<endl;
-    for (int i=0;i<s.length();i+=sizeof(int)+sizeof(sockaddr_in)){
-        int id=*((int*)(s.c_str()+i));
-        sockaddr_in addr=*((sockaddr_in*)(s.c_str()+i+sizeof(int)));
-        cout<<id<<": "<<inet_ntoa(addr.sin_addr)<<":"<<ntohs(addr.sin_port)<<endl;
+void PrintList(const string &s) {
+    cout << "Client list:" << endl;
+    for (int i = 0; i < s.length(); i += sizeof(int) + sizeof(sockaddr_in)) {
+        int id = *((int *) (s.c_str() + i));
+        sockaddr_in addr = *((sockaddr_in *) (s.c_str() + i + sizeof(int)));
+        cout << id << ": " << inet_ntoa(addr.sin_addr) << ":" << ntohs(addr.sin_port) << endl;
     }
+    flush(cout);
+}
+
+void PostMsg(const string &s, SOCKET server_s) {
+    stringstream ss(s);
+    int id;
+    string msg;
+    ss >> id;
+    getline(ss, msg);
+    Send(SendMsg, TO_STRING(id) + msg, server_s);
+}
+
+void PrintRespMsg(const string &s) {
+    if (!s[0]) {
+        cout << "Send success!" << endl;
+    } else {
+        cout << "Send failed!" << endl;
+    }
+    flush(cout);
+}
+
+void PrintRcvMsg(const string &s) {
+    int id = *((int *) s.c_str());
+    string msg = s.substr(sizeof(int));
+    cout << "From " << id << ":" << msg << endl;
+    flush(cout);
+}
+
+void PrintMenu() {
+    cout << "Menu:" << endl;
+    cout << "connect <ip> <port> - connect to server" << endl;
+    cout << "close - close connection" << endl;
+    cout << "gettime - get server time" << endl;
+    cout << "getname - get server name" << endl;
+    cout << "getlist - get client list" << endl;
+    cout << "send <id> <msg> - send message to client" << endl;
+    cout << "exit - exit program" << endl;
+    flush(cout);
 }
 
 int main() {
     WORD sockVersion = MAKEWORD(2, 2);
     WSADATA data;
     if (WSAStartup(sockVersion, &data) != 0) {
+        cout << WSAGetLastError() << "!!!" << endl;
         return 0;
     }
-
+    PrintMenu();
     thread user_handler(UserHandler);
     user_handler.detach();
     string op;
     bool connected = false;
     SOCKET sclient;
     while (1) {
-        if (!msg_q.empty()) {
-            msg_mutex.lock();
-            Msg temp = msg_q.front();
-            msg_q.pop();
-            msg_mutex.unlock();
-            cout << "msg!!!" << endl;
-            if (temp.type.user == UserConnect) {
-                sclient = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (!msg_q.empty()) { //判断消息队列是否有消息
+            msg_mutex.lock(); //加锁
+            Msg temp = msg_q.front(); //取出消息
+            msg_q.pop(); //删除消息
+            msg_mutex.unlock(); //解锁
+            if (temp.type.user == UserConnect) { //用户连接请求
+                sclient = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP); //创建套接字
                 if (sclient == INVALID_SOCKET) {
                     printf("invalid socket!");
-                    return 0;
+                    continue;
                 }
                 stringstream ss(temp.data);
                 string ip;
                 int port;
-                ss >> ip >> port;
-                sockaddr_in serAddr;
+                ss >> ip >> port; //获取ip和端口
+                sockaddr_in serAddr; //设置服务器地址
                 serAddr.sin_family = AF_INET;
                 serAddr.sin_port = htons(port);
                 serAddr.sin_addr.S_un.S_addr = inet_addr(ip.c_str());
                 if (connect(sclient, (sockaddr *) &serAddr, sizeof(serAddr)) == SOCKET_ERROR) {  //连接失败
                     printf("connect error !");
                     closesocket(sclient);
-                    return 0;
+                    continue;
                 }
-                connected = true;
-                u_long a = 1;
-                cout << "ioerr:" << ioctlsocket(sclient, FIONBIO, &a) << endl;
-                thread rcv_t(Receiver, sclient);
-                rcv_t.detach();
-            } else if (temp.type.op == CloseConnection || temp.type.user == UserClose) {
-                cout << "closed" << endl;
-                closesocket(sclient);
-                connected = false;
-            } else if (temp.type.op == RespTime) {
+                cout << "Connected!" << endl;
+                connected = true; //连接成功
+                thread rcv_t(Receiver, sclient); //创建接收线程
+                rcv_t.detach(); //分离线程
+            } else if (temp.type.user == CloseConnection || temp.type.user == UserClose) { //关闭连接
+                if (connected) { //如果已经连接
+                    closesocket(sclient);
+                    connected = false;
+                    cout << "Connection closed." << endl;
+                }
+            } else if (temp.type.user == UserExit) { //退出程序
+                if (connected) {
+                    closesocket(sclient);
+                    connected = false;
+                }
+                break;
+            } else if (temp.type.op == RespTime) { //处理服务器时间响应
                 PrintTime(*(time_t *) temp.data.c_str());
-            } else if (temp.type.op == GetName) {
+            } else if (temp.type.op == GetName) { //发送服务器名称请求
                 ReqName(sclient);
-            } else if (temp.type.op == RespName) {
+            } else if (temp.type.op == RespName) { //处理服务器名称响应
                 PrintName(temp.data);
-            } else if (temp.type.op == GetList) {
+            } else if (temp.type.op == GetList) { //发送客户端列表请求
                 ReqList(sclient);
-            } else if (temp.type.op == RespList) {
+            } else if (temp.type.op == RespList) { //处理客户端列表响应
                 PrintList(temp.data);
-            } else if (temp.type.op == GetTime){
+            } else if (temp.type.op == GetTime) { //发送服务器时间请求
                 ReqTime(sclient);
+            } else if (temp.type.op == SendMsg) { //向指定客户端发送消息
+                PostMsg(temp.data, sclient);
+            } else if (temp.type.op == RespMsg) { //处理消息发送响应
+                PrintRespMsg(temp.data);
+            } else if (temp.type.op == RcvMsg) { //处理接收到的消息
+                PrintRcvMsg(temp.data);
             }
         }
     }
-
-
-
-
-
-
-//    char recData[255];
-//    int ret = recv(sclient, recData, 255, 0);
-//    if (ret > 0) {
-//        recData[ret] = 0x00;
-//        printf(recData);
-//    }
-    closesocket(sclient);
-
-
     WSACleanup();
     return 0;
-
 }

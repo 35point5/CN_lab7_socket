@@ -14,10 +14,12 @@ enum OpType{
     GetTime,
     GetName,
     GetList,
+    SendMsg,
     RespTime,
     RespName,
     RespList,
-    CloseConnection
+    RespMsg,
+    RcvMsg
 };
 enum Stage{
     BeginStage,
